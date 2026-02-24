@@ -148,9 +148,9 @@ Future<void> main() async {
   final repo2 = scope2.serviceProvider.getRequired<IUserRepository>();
   print(await repo2.findById(2));
 
-  // repo1 and repo2 are different instances.
-  assert(!identical(repo1, repo2));
-  print('repo1 == repo2? ${identical(repo1, repo2)}'); // false
+  // Scoped services are isolated per scope — different instances across scopes.
+  print(
+      'repo1 is repo2? ${identical(repo1, repo2)}'); // false — scoped isolation confirmed
 
   scope1.dispose();
   scope2.dispose();
@@ -175,29 +175,34 @@ Future<void> main() async {
   final nothing = await provider.tryGetAsync<String>();
   print('tryGetAsync<String> (unregistered): $nothing');
 
-  // ── 7. getAll — multi-registration ───────────────────────────────────────
-  // Build a fresh container with multiple ILogger implementations.
+  // ── 7. getAll — consume all registered implementations of a service ────────
+  // Register two named cache implementations under the same abstract type,
+  // then resolve all of them in one call — useful for broadcast patterns
+  // (e.g. fan-out notifications, composite health checks).
   final multiSc = ServiceCollection()
-    ..addSingleton<ILogger, ConsoleLogger>()
-    ..addSingleton<ILogger, ConsoleLogger>(); // register twice for demo
+    ..addSingleton<ICacheService, MemoryCacheService>()
+    ..addSingleton<ICacheService, RedisCacheService>();
 
   final multiProvider = multiSc.buildServiceProvider();
-  final allLoggers = multiProvider.getAll<ILogger>();
-  print('\ngetAll<ILogger> count: ${allLoggers.length}'); // 2
+  final allCaches = multiProvider.getAll<ICacheService>();
+  print('\ngetAll<ICacheService> resolved ${allCaches.length} implementations');
   await multiProvider.disposeAsync();
 
-  // ── 8. replace ────────────────────────────────────────────────────────────
-  final replaceSc = ServiceCollection()
-    ..addInstance<ILogger>(ConsoleLogger())
+  // ── 8. replace — swap an implementation without rebuilding the collection ──
+  // Useful during testing or when environment-specific overrides are applied
+  // after the initial service registration pass.
+  final overrideSc = ServiceCollection()
+    ..addSingleton<ILogger, ConsoleLogger>()
     ..replace(ServiceDescriptor.factoryFn(
       serviceType: ILogger,
       lifetime: ServiceLifetime.singleton,
-      factory: (_) => ConsoleLogger(), // overrides the instance above
+      factory: (_) => ConsoleLogger(), // swap to a different concrete type
     ));
-  print('\nAfter replace, descriptor count: '
-      '${replaceSc.descriptorsFor<ILogger>().length}'); // 1
+  final overrideProvider = overrideSc.buildServiceProvider();
+  final overriddenLogger = overrideProvider.getRequired<ILogger>();
+  overriddenLogger.log('Resolved from overridden registration');
+  await overrideProvider.disposeAsync();
 
   // ── 9. Dispose the root provider ─────────────────────────────────────────
   await provider.disposeAsync();
-  print('\nProvider disposed. Goodbye!');
 }
