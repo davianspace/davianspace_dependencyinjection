@@ -9,7 +9,6 @@ license: MIT
 topics:
   - dependency-injection
   - di
-  - ioc
   - flutter
   - architecture
   - service-container
