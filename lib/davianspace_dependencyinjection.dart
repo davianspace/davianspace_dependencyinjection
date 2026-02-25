@@ -74,10 +74,14 @@ export 'src/lazy/lazy_service.dart';
 // --- ServiceFactory<T> ---
 export 'src/factory/service_factory.dart';
 
-// --- Options Pattern ---
-// Note: These will move to `davianspace_options` when that package is
-// published. The extension and manager only depend on the public
-// ServiceCollection / ServiceProviderBase API, making extraction trivial.
-export 'src/options/i_options.dart';
-export 'src/options/options_manager.dart';
+// --- Options Pattern (powered by davianspace_options) ---
+// Import davianspace_options directly for Options<T>, OptionsSnapshot<T>,
+// OptionsMonitor<T>, OptionsChangeNotifier and all supporting types.
+// Use configure<T> / postConfigure<T> on ServiceCollection to register.
 export 'src/options/options_service_collection_extensions.dart';
+
+// --- Configuration (powered by davianspace_configuration) ---
+// Import davianspace_configuration directly for Configuration,
+// ConfigurationRoot, ConfigurationBuilder and providers.
+// Use addConfiguration / addConfigurationBuilder on ServiceCollection.
+export 'src/configuration/configuration_service_collection_extensions.dart';

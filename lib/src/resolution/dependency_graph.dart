@@ -25,44 +25,60 @@ final class DependencyGraph {
 
   /// Performs a depth-first search over the graph to find cycles.
   ///
+  /// Uses an **iterative** DFS to avoid stack-overflow on large (but acyclic)
+  /// dependency graphs.
+  ///
   /// Throws [CircularDependencyException] on the first cycle found.
   void detectCycles() {
     final visited = <Type>{};
     final onStack = <Type>{};
     final parent = <Type, Type?>{};
 
-    void dfs(Type node) {
-      visited.add(node);
-      onStack.add(node);
+    // Stack frames: (node, iterator over remaining neighbors).
+    final stack = <(Type, Iterator<Type>)>[];
 
-      for (final neighbor in (_adjacency[node] ?? const <Type>{})) {
-        parent[neighbor] = node;
-        if (!visited.contains(neighbor)) {
-          dfs(neighbor);
-        } else if (onStack.contains(neighbor)) {
-          // Reconstruct the cycle path.
-          final cycle = <Type>[];
-          var current = node;
-          while (current != neighbor) {
-            cycle.add(current);
-            current = parent[current]!;
+    for (final start in _adjacency.keys) {
+      if (visited.contains(start)) continue;
+
+      visited.add(start);
+      onStack.add(start);
+      parent[start] = null;
+      stack.add((start, (_adjacency[start] ?? const <Type>{}).iterator));
+
+      while (stack.isNotEmpty) {
+        final (node, neighbors) = stack.last;
+
+        if (neighbors.moveNext()) {
+          final neighbor = neighbors.current;
+          parent[neighbor] = node;
+
+          if (!visited.contains(neighbor)) {
+            visited.add(neighbor);
+            onStack.add(neighbor);
+            stack.add(
+                (neighbor, (_adjacency[neighbor] ?? const <Type>{}).iterator));
+          } else if (onStack.contains(neighbor)) {
+            // Back-edge detected — reconstruct and report the cycle.
+            final cycle = <Type>[];
+            var current = node;
+            while (current != neighbor) {
+              cycle.add(current);
+              current = parent[current]!;
+            }
+            cycle
+              ..add(neighbor)
+              ..add(neighbor); // repeat start to show it's a cycle
+            final path = cycle.reversed.toList();
+            throw CircularDependencyException(
+              chain: path,
+              message: path.map((t) => t.toString()).join(' → '),
+            );
           }
-          cycle
-            ..add(neighbor)
-            ..add(neighbor); // repeat start to show it's a cycle
-          throw CircularDependencyException(
-            chain: cycle.reversed.toList(),
-            message: cycle.reversed.map((t) => t.toString()).join(' → '),
-          );
+        } else {
+          // All neighbors of this node are processed — pop it.
+          stack.removeLast();
+          onStack.remove(node);
         }
-      }
-
-      onStack.remove(node);
-    }
-
-    for (final node in _adjacency.keys) {
-      if (!visited.contains(node)) {
-        dfs(node);
       }
     }
   }

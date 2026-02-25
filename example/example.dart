@@ -1,6 +1,18 @@
 // ignore_for_file: avoid_print
 
+import 'package:davianspace_configuration/davianspace_configuration.dart';
 import 'package:davianspace_dependencyinjection/davianspace_dependencyinjection.dart';
+import 'package:davianspace_options/davianspace_options.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Options & Configuration models (for examples 9 & 10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class ServerOptions {
+  String host = 'localhost';
+  int port = 8080;
+  bool useSsl = false;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Domain abstractions
@@ -203,6 +215,74 @@ Future<void> main() async {
   overriddenLogger.log('Resolved from overridden registration');
   await overrideProvider.disposeAsync();
 
-  // ── 9. Dispose the root provider ─────────────────────────────────────────
+  // ── 9. Options Pattern ──────────────────────────────────────────────────────
+  // configure<T> registers Options<T> (singleton), OptionsSnapshot<T>
+  // (scoped), and OptionsMonitor<T> (singleton) automatically.
+  final optionsSc = ServiceCollection()
+    ..configure<ServerOptions>(
+      factory: ServerOptions.new,
+      configure: (opts) {
+        opts.host = 'api.prod.internal';
+        opts.port = 443;
+        opts.useSsl = true;
+      },
+    );
+
+  final optionsProvider =
+      optionsSc.buildServiceProvider(ServiceProviderOptions.production);
+
+  final singletonOpts =
+      optionsProvider.getRequired<Options<ServerOptions>>().value;
+  print('\n[Options] host=${singletonOpts.host} port=${singletonOpts.port}'
+      ' ssl=${singletonOpts.useSsl}');
+
+  // OptionsMonitor supports live reload via keyed OptionsChangeNotifier.
+  var reloadCount = 0;
+  final monitor = optionsProvider.getRequired<OptionsMonitor<ServerOptions>>();
+  final reg = monitor.onChange((opts, _) {
+    reloadCount++;
+    print('[Options] reloaded: host=${opts.host}');
+  });
+
+  final notifier =
+      optionsProvider.getRequiredKeyed<OptionsChangeNotifier>(ServerOptions);
+  notifier.notifyChange(Options.defaultName); // triggers the listener above
+  print('[Options] reload count: $reloadCount');
+
+  reg.dispose();
+  optionsProvider.dispose();
+
+  // ── 10. Configuration ───────────────────────────────────────────────
+  // addConfiguration registers Configuration (and ConfigurationRoot)
+  // as injectable singletons. Options can be bound directly from config.
+  final config = ConfigurationBuilder().addMap({
+    'server': {'host': 'config.prod.internal', 'port': 443, 'useSsl': true},
+  }).build();
+
+  final configSc = ServiceCollection()
+    ..addConfiguration(config)
+    ..configure<ServerOptions>(
+      factory: ServerOptions.new,
+      configure: (opts) {
+        final s = config.getSection('server');
+        opts.host = s['host'] ?? 'localhost';
+        opts.port = int.parse(s['port'] ?? '8080');
+        opts.useSsl = (s['useSsl'] ?? 'false') == 'true';
+      },
+    );
+
+  final configProvider =
+      configSc.buildServiceProvider(ServiceProviderOptions.production);
+
+  final cfg = configProvider.getRequired<Configuration>();
+  print('\n[Configuration] server:host=${cfg['server:host']}');
+
+  final cfgOpts =
+      configProvider.getRequired<Options<ServerOptions>>().value;
+  print('[Configuration+Options] host=${cfgOpts.host} ssl=${cfgOpts.useSsl}');
+
+  configProvider.dispose();
+
+  // ── 11. Dispose the root provider ─────────────────────────────────────────
   await provider.disposeAsync();
 }

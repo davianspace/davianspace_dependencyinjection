@@ -86,18 +86,19 @@ final class CallSiteExecutor {
 
   Object _resolveScoped(
       Type type, CallSite inner, ResolutionChain chain, Object? key) {
-    if (_scopedCache == null) {
+    final cache = _scopedCache;
+    if (cache == null) {
       // Being resolved from root — treat as singleton.
       return _resolveSingleton(type, inner, chain, key);
     }
-    final cached = _scopedCache.get(type, key);
+    final cached = cache.get(type, key);
     if (cached != null) {
       _diagnostics.trace('Scoped cache hit: $type', serviceType: type);
       return cached;
     }
     _diagnostics.trace('Scoped cache miss: $type', serviceType: type);
     final instance = _resolveInner(inner, chain);
-    _scopedCache.set(type, instance, key);
+    cache.set(type, instance, key);
     _disposalTracker.track(instance);
     return instance;
   }
@@ -225,25 +226,26 @@ final class CallSiteExecutor {
 
   Future<Object> _resolveScopedAsync(
       Type type, CallSite inner, ResolutionChain chain, Object? key) async {
-    if (_scopedCache == null) {
+    final cache = _scopedCache;
+    if (cache == null) {
       return _resolveSingletonAsync(type, inner, chain, key);
     }
 
-    final cached = _scopedCache.get(type, key);
+    final cached = cache.get(type, key);
     if (cached != null) return cached;
 
-    final pending = _scopedCache.getPendingCompleter(type, key);
+    final pending = cache.getPendingCompleter(type, key);
     if (pending != null) return pending.future;
 
     final completer = Completer<Object>();
-    _scopedCache.reserveAsync(type, completer, key);
+    cache.reserveAsync(type, completer, key);
     try {
       final instance = await _resolveInnerAsync(inner, chain);
-      _scopedCache.completeAsync(type, instance, key);
+      cache.completeAsync(type, instance, key);
       _disposalTracker.track(instance);
       return instance;
     } catch (e) {
-      _scopedCache.dispose(); // clear poisoned entry
+      cache.dispose(); // clear poisoned entry
       completer.completeError(e);
       rethrow;
     }

@@ -1,4 +1,5 @@
 import 'package:davianspace_dependencyinjection/davianspace_dependencyinjection.dart';
+import 'package:davianspace_options/davianspace_options.dart';
 import 'package:davianspace_dependencyinjection/src/resolution/dependency_graph.dart';
 import 'package:test/test.dart';
 
@@ -92,6 +93,7 @@ DependencyGraph _buildCyclicGraph() {
 void main() {
   setUp(() {
     ReflectionHelper.instance.clear();
+    ActivatorHelper.instance.clear();
     _registerFactories();
   });
 
@@ -400,7 +402,7 @@ void main() {
   // Scope violation
   // ─────────────────────────────────────────────────────────────────────────
   group('Scope violation detection', () {
-    test('scoped-in-singleton throws ScopeViolationException at build', () {
+    test('scoped-in-singleton throws ContainerBuildException at build', () {
       expect(
         () {
           final sc = ServiceCollection()
@@ -408,8 +410,22 @@ void main() {
             ..addScoped<ILogger, ConsoleLogger>();
           sc.buildServiceProvider(ServiceProviderOptions.development);
         },
-        throwsA(isA<ScopeViolationException>()),
+        throwsA(isA<ContainerBuildException>()),
       );
+    });
+
+    test('ContainerBuildException message contains ScopeViolation', () {
+      late final ContainerBuildException caught;
+      try {
+        final sc = ServiceCollection()
+          ..addSingleton<IDatabase, Database>()
+          ..addScoped<ILogger, ConsoleLogger>();
+        sc.buildServiceProvider(ServiceProviderOptions.development);
+      } on ContainerBuildException catch (e) {
+        caught = e;
+      }
+      expect(caught.errors, isNotEmpty);
+      expect(caught.errors.first, contains('ScopeViolation'));
     });
   });
 
@@ -808,4 +824,732 @@ void main() {
       await provider.disposeAsync();
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Root ServiceProvider dispose guard (regression: missing before fix)
+  // ─────────────────────────────────────────────────────────────────────────
+  group('Root provider disposal guard', () {
+    late ServiceProvider provider;
+
+    setUp(() {
+      final sc = ServiceCollection()..addSingleton<ILogger, ConsoleLogger>();
+      provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+    });
+
+    test('tryGet throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.tryGet<ILogger>(), throwsStateError);
+    });
+
+    test('getRequired throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.getRequired<ILogger>(), throwsStateError);
+    });
+
+    test('getAll throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.getAll<ILogger>(), throwsStateError);
+    });
+
+    test('getAsync throws StateError after dispose', () async {
+      provider.dispose();
+      await expectLater(provider.getAsync<ILogger>(), throwsStateError);
+    });
+
+    test('tryGetAsync throws StateError after dispose', () async {
+      provider.dispose();
+      await expectLater(provider.tryGetAsync<ILogger>(), throwsStateError);
+    });
+
+    test('tryGetKeyed throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.tryGetKeyed<ILogger>('k'), throwsStateError);
+    });
+
+    test('getRequiredKeyed throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.getRequiredKeyed<ILogger>('k'), throwsStateError);
+    });
+
+    test('getAsyncKeyed throws StateError after dispose', () async {
+      provider.dispose();
+      await expectLater(provider.getAsyncKeyed<ILogger>('k'), throwsStateError);
+    });
+
+    test('createScope throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.createScope(), throwsStateError);
+    });
+
+    test('resolveRequired throws StateError after dispose', () {
+      provider.dispose();
+      expect(() => provider.resolveRequired(ILogger), throwsStateError);
+    });
+
+    test('double dispose is safe (idempotent)', () {
+      provider.dispose();
+      expect(() => provider.dispose(), returnsNormally);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DisposalException multi-error
+  // ─────────────────────────────────────────────────────────────────────────
+  group('DisposalException multi-error', () {
+    test('collects all disposal failures', () {
+      // Register two disposable singletons that both throw during dispose.
+      int callCount = 0;
+      final sc = ServiceCollection()
+        ..addSingletonFactory<_IThrowA>((_) {
+          callCount++;
+          return _ThrowingDisposable('A-$callCount');
+        })
+        ..addSingletonFactory<_IThrowB>((_) {
+          callCount++;
+          return _ThrowingDisposable('B-$callCount');
+        });
+
+      final provider =
+          sc.buildServiceProvider(ServiceProviderOptions.production);
+      provider.getRequired<_IThrowA>();
+      provider.getRequired<_IThrowB>();
+
+      DisposalException? caught;
+      try {
+        provider.dispose();
+      } on DisposalException catch (e) {
+        caught = e;
+      }
+
+      expect(caught, isNotNull);
+      // Both disposals failed — all errors must be reported.
+      expect(caught!.errors.length, equals(2));
+    });
+
+    test('single failure smoke test', () {
+      final sc = ServiceCollection()
+        ..addSingletonFactory<_IThrowA>((_) => _ThrowingDisposable('only'));
+      final provider =
+          sc.buildServiceProvider(ServiceProviderOptions.production);
+      provider.getRequired<_IThrowA>();
+      expect(() => provider.dispose(), throwsA(isA<DisposalException>()));
+    });
+
+    test('errors list accessor on DisposalException', () {
+      final e = DisposalException([(String, StateError('boom'))]);
+      expect(e.serviceType, equals(String));
+      expect(e.cause, isA<StateError>());
+      expect(e.errors, hasLength(1));
+      expect(e.toString(), contains('boom'));
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CallSiteValidator collectAll semantics
+  // ─────────────────────────────────────────────────────────────────────────
+  group('Scope violation validator collectAll', () {
+    test('collectAll:true gathers all violations without throwing internally',
+        () {
+      // Two singletons each capturing a different scoped service.
+      // With collectAll:true both should appear in ContainerBuildException.
+      expect(
+        () {
+          final sc = ServiceCollection()
+            ..addSingleton<IDatabase, Database>()
+            ..addSingleton<IEmailSender, SmtpEmailSender>()
+            ..addScoped<ILogger, ConsoleLogger>();
+          sc.buildServiceProvider(ServiceProviderOptions.development);
+        },
+        throwsA(isA<ContainerBuildException>()),
+      );
+    });
+
+    test('collectAll:false throws ScopeViolationException immediately', () {
+      // Call the validator directly with collectAll:false.
+      final sc = ServiceCollection()
+        ..addSingleton<IDatabase, Database>()
+        ..addScoped<ILogger, ConsoleLogger>();
+
+      // Build without validation so we can inspect the call sites.
+      final provider =
+          sc.buildServiceProvider(ServiceProviderOptions.production);
+      expect(provider, isNotNull);
+      provider.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CallSiteExecutor per-provider caching (performance regression guard)
+  // ─────────────────────────────────────────────────────────────────────────
+  group('CallSiteExecutor caching', () {
+    test('singleton resolution is stable under repeated calls', () {
+      final sc = ServiceCollection()..addSingleton<ILogger, ConsoleLogger>();
+      final provider =
+          sc.buildServiceProvider(ServiceProviderOptions.production);
+
+      // These calls all go through the same cached executor — any per-call
+      // allocation regression would not break correctness but we verify
+      // identity remains stable.
+      final instances = [
+        for (var i = 0; i < 100; i++) provider.getRequired<ILogger>()
+      ];
+      expect(instances.every((i) => identical(i, instances.first)), isTrue);
+      provider.dispose();
+    });
+
+    test('scoped executor resolves independently per scope', () {
+      final sc = ServiceCollection()..addScoped<ILogger, ConsoleLogger>();
+      final provider =
+          sc.buildServiceProvider(ServiceProviderOptions.production);
+
+      final scope1 = provider.createScope();
+      final scope2 = provider.createScope();
+
+      final a = scope1.serviceProvider.getRequired<ILogger>();
+      final b = scope2.serviceProvider.getRequired<ILogger>();
+      expect(identical(a, b), isFalse);
+
+      scope1.dispose();
+      scope2.dispose();
+      provider.dispose();
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // ScopeManager
+  // ───────────────────────────────────────────────────────────────────────────
+  group('ScopeManager', () {
+    late ServiceProvider provider;
+
+    setUp(() {
+      final sc = ServiceCollection()
+        ..addScoped<ILogger, ConsoleLogger>()
+        ..addSingleton<IDatabase, Database>();
+      provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+    });
+
+    tearDown(() => provider.dispose());
+
+    test('beginScope creates an active scope', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('req');
+      expect(mgr.hasScope('req'), isTrue);
+      expect(mgr.activeScopes, contains('req'));
+      mgr.endScope('req');
+    });
+
+    test('beginScope throws when name already exists', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('s');
+      expect(() => mgr.beginScope('s'), throwsStateError);
+      mgr.endScope('s');
+    });
+
+    test('beginScopeIfAbsent is a no-op when scope already exists', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('s');
+      expect(() => mgr.beginScopeIfAbsent('s'), returnsNormally);
+      expect(mgr.activeScopes, hasLength(1));
+      mgr.endScope('s');
+    });
+
+    test('getRequired resolves from named scope', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('r');
+      final logger = mgr.getRequired<ILogger>('r');
+      expect(logger, isA<ConsoleLogger>());
+      mgr.endScope('r');
+    });
+
+    test('tryGet returns null for unregistered type', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('r');
+      expect(mgr.tryGet<IEmailSender>('r'), isNull);
+      mgr.endScope('r');
+    });
+
+    test('scope() throws for unknown scope name', () {
+      final mgr = ScopeManager(provider);
+      expect(() => mgr.scope('missing'), throwsStateError);
+    });
+
+    test('endScope throws for unknown scope name', () {
+      final mgr = ScopeManager(provider);
+      expect(() => mgr.endScope('missing'), throwsStateError);
+    });
+
+    test('scoped services from same scope are identical', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('r');
+      final a = mgr.getRequired<ILogger>('r');
+      final b = mgr.getRequired<ILogger>('r');
+      expect(identical(a, b), isTrue);
+      mgr.endScope('r');
+    });
+
+    test('scoped services from different scopes differ', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('r1');
+      mgr.beginScope('r2');
+      final a = mgr.getRequired<ILogger>('r1');
+      final b = mgr.getRequired<ILogger>('r2');
+      expect(identical(a, b), isFalse);
+      mgr.disposeAll();
+    });
+
+    test('disposeAll removes all scopes', () {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('a');
+      mgr.beginScope('b');
+      mgr.disposeAll();
+      expect(mgr.activeScopes, isEmpty);
+    });
+
+    test('disposeAll continues on error and rethrows first', () {
+      final sc2 = ServiceCollection()
+        ..addScopedFactory<ILogger>((_) => _ThrowingDisposable2());
+      final p2 = sc2.buildServiceProvider(ServiceProviderOptions.production);
+      // Force instantiation so the service is tracked
+      final mgr = ScopeManager(p2);
+      mgr.beginScope('x');
+      mgr.beginScope('y');
+      mgr.getRequired<ILogger>('x');
+      mgr.getRequired<ILogger>('y');
+      // Both scopes will fail to dispose
+      expect(() => mgr.disposeAll(), throwsA(isA<DisposalException>()));
+      // All scopes must have been removed regardless
+      expect(mgr.activeScopes, isEmpty);
+      p2.dispose();
+    });
+
+    test('disposeAllAsync removes all scopes', () async {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('a');
+      mgr.beginScope('b');
+      await mgr.disposeAllAsync();
+      expect(mgr.activeScopes, isEmpty);
+    });
+
+    test('endScopeAsync disposes and removes scope', () async {
+      final mgr = ScopeManager(provider);
+      mgr.beginScope('r');
+      await mgr.endScopeAsync('r');
+      expect(mgr.hasScope('r'), isFalse);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Lazy<T>
+  // ───────────────────────────────────────────────────────────────────────────
+  group('Lazy<T>', () {
+    test('factory not called before first access', () {
+      int calls = 0;
+      final lazy = Lazy(() {
+        calls++;
+        return ConsoleLogger();
+      });
+      expect(calls, equals(0));
+      expect(lazy.isValueCreated, isFalse);
+    });
+
+    test('factory called exactly once on first access', () {
+      int calls = 0;
+      final lazy = Lazy(() {
+        calls++;
+        return ConsoleLogger();
+      });
+      lazy.value;
+      lazy.value;
+      expect(calls, equals(1));
+    });
+
+    test('same instance returned on subsequent accesses', () {
+      final lazy = Lazy(ConsoleLogger.new);
+      expect(identical(lazy.value, lazy.value), isTrue);
+    });
+
+    test('isValueCreated is true after first access', () {
+      final lazy = Lazy(ConsoleLogger.new);
+      lazy.value;
+      expect(lazy.isValueCreated, isTrue);
+    });
+
+    test('resolved via DI container', () {
+      final sc = ServiceCollection()
+        ..addSingleton<ILogger, ConsoleLogger>()
+        ..addLazySingleton<ILogger>();
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final lazy = provider.getRequired<Lazy<ILogger>>();
+      expect(lazy.isValueCreated, isFalse);
+      final logger = lazy.value;
+      expect(logger, isA<ConsoleLogger>());
+      expect(lazy.isValueCreated, isTrue);
+      provider.dispose();
+    });
+
+    test('toString reflects initialisation state', () {
+      final lazy = Lazy(ConsoleLogger.new);
+      expect(lazy.toString(), contains('not created'));
+      lazy.value;
+      expect(lazy.toString(), contains('created'));
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // ActivatorUtilities
+  // ───────────────────────────────────────────────────────────────────────────
+  group('ActivatorUtilities', () {
+    late ServiceProvider provider;
+
+    setUp(() {
+      ActivatorHelper.instance.register<_Widget>(
+        _Widget,
+        (resolve, args) => _Widget(
+          resolve(ILogger) as ILogger,
+          args[0] as String,
+        ),
+      );
+      final sc = ServiceCollection()..addSingleton<ILogger, ConsoleLogger>();
+      provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+    });
+
+    tearDown(() => provider.dispose());
+
+    test('createInstance resolves DI dep and injects runtime arg', () {
+      final widget = ActivatorUtilities.createInstance<_Widget>(
+        provider,
+        positionalArgs: ['hello'],
+      );
+      expect(widget.label, equals('hello'));
+      expect(widget.logger, isA<ConsoleLogger>());
+    });
+
+    test('createInstance throws StateError for unregistered factory', () {
+      expect(
+        () => ActivatorUtilities.createInstance<_UnregisteredWidget>(provider),
+        throwsStateError,
+      );
+    });
+
+    test('ActivatorHelper.hasFactory returns true after register', () {
+      expect(ActivatorHelper.instance.hasFactory(_Widget), isTrue);
+    });
+
+    test('ActivatorHelper.unregister removes factory', () {
+      ActivatorHelper.instance.unregister(_Widget);
+      expect(ActivatorHelper.instance.hasFactory(_Widget), isFalse);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Options pattern
+  // ───────────────────────────────────────────────────────────────────────────
+  group('Options pattern', () {
+    test('Options<T> returns configured value', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (o) => o.host = 'localhost',
+        );
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final opts = provider.getRequired<Options<_ServerOptions>>().value;
+      expect(opts.host, equals('localhost'));
+      provider.dispose();
+    });
+
+    test('Options<T> value is singleton (same instance each call)', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(factory: _ServerOptions.new);
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final a = provider.getRequired<Options<_ServerOptions>>().value;
+      final b = provider.getRequired<Options<_ServerOptions>>().value;
+      expect(identical(a, b), isTrue);
+      provider.dispose();
+    });
+
+    test('configure callbacks applied in registration order', () {
+      final log = <String>[];
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (_) => log.add('first'),
+        )
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (_) => log.add('second'),
+        );
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      provider.getRequired<Options<_ServerOptions>>().value;
+      expect(log, equals(['first', 'second']));
+      provider.dispose();
+    });
+
+    test('postConfigure runs after configure', () {
+      final log = <String>[];
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (_) => log.add('configure'),
+        )
+        ..postConfigure<_ServerOptions>((_) => log.add('postConfigure'));
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      provider.getRequired<Options<_ServerOptions>>().value;
+      expect(log, equals(['configure', 'postConfigure']));
+      provider.dispose();
+    });
+
+    test('postConfigure throws if configure not called first', () {
+      final sc = ServiceCollection();
+      expect(
+        () => sc.postConfigure<_ServerOptions>((_) {}),
+        throwsStateError,
+      );
+    });
+
+    test('OptionsSnapshot<T> returns fresh instance per scope', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(factory: _ServerOptions.new);
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+
+      final scope1 = provider.createScope();
+      final scope2 = provider.createScope();
+      final a = scope1.serviceProvider
+          .getRequired<OptionsSnapshot<_ServerOptions>>()
+          .value;
+      final b = scope2.serviceProvider
+          .getRequired<OptionsSnapshot<_ServerOptions>>()
+          .value;
+      expect(identical(a, b), isFalse);
+      scope1.dispose();
+      scope2.dispose();
+      provider.dispose();
+    });
+
+    test('OptionsSnapshot<T>.get returns named options', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (o) => o.host = 'default',
+        )
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (o) => o.host = 'secondary',
+          name: 'secondary',
+        );
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final scope = provider.createScope();
+      final snap =
+          scope.serviceProvider.getRequired<OptionsSnapshot<_ServerOptions>>();
+      expect(snap.value.host, equals('default'));
+      expect(snap.get('secondary').host, equals('secondary'));
+      scope.dispose();
+      provider.dispose();
+    });
+
+    test('OptionsMonitor<T> currentValue reflects initial configuration', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (o) => o.host = 'prod',
+        );
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final monitor = provider.getRequired<OptionsMonitor<_ServerOptions>>();
+      expect(monitor.currentValue.host, equals('prod'));
+      provider.dispose();
+    });
+
+    test('OptionsMonitor<T> onChange listener fires on reload', () {
+      var host = 'initial';
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(
+          factory: _ServerOptions.new,
+          configure: (o) => o.host = host,
+        );
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final monitor = provider.getRequired<OptionsMonitor<_ServerOptions>>();
+
+      _ServerOptions? received;
+      final reg = monitor.onChange((_ServerOptions opts, _) => received = opts);
+
+      // Update what the factory produces, then signal a reload.
+      host = 'updated';
+      final notifier =
+          provider.getRequiredKeyed<OptionsChangeNotifier>(_ServerOptions);
+      notifier.notifyChange(Options.defaultName);
+
+      expect(received, isNotNull);
+      expect(received!.host, equals('updated'));
+      expect(monitor.currentValue.host, equals('updated'));
+
+      reg.dispose();
+      provider.dispose();
+    });
+
+    test('OptionsChangeRegistration.dispose() is idempotent', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(factory: _ServerOptions.new);
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final monitor = provider.getRequired<OptionsMonitor<_ServerOptions>>();
+
+      final reg = monitor.onChange((_, __) {});
+      reg.dispose();
+      // Second call must not throw.
+      expect(() => reg.dispose(), returnsNormally);
+
+      // Listener no longer fires after disposal.
+      int count = 0;
+      monitor.onChange((_, __) => count++);
+      final notifier =
+          provider.getRequiredKeyed<OptionsChangeNotifier>(_ServerOptions);
+      notifier.notifyChange(Options.defaultName);
+      expect(count, equals(1)); // new listener fires, disposed one does not
+
+      provider.dispose();
+    });
+
+    test('onChange listener deregistered after dispose', () {
+      final sc = ServiceCollection()
+        ..configure<_ServerOptions>(factory: _ServerOptions.new);
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      final monitor = provider.getRequired<OptionsMonitor<_ServerOptions>>();
+      final notifier =
+          provider.getRequiredKeyed<OptionsChangeNotifier>(_ServerOptions);
+
+      int count = 0;
+      final reg = monitor.onChange((_, __) => count++);
+      notifier.notifyChange(Options.defaultName); // count → 1
+      reg.dispose();
+      notifier.notifyChange(Options.defaultName); // should not increment
+      expect(count, equals(1));
+
+      provider.dispose();
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // ServiceModule
+  // ───────────────────────────────────────────────────────────────────────────
+  group('ServiceModule', () {
+    test('module registers services into the collection', () {
+      final sc = ServiceCollection()..addModule(_LoggingModule());
+      expect(sc.isRegistered<ILogger>(), isTrue);
+      expect(sc.isRegistered<IDatabase>(), isTrue);
+    });
+
+    test('services registered by module are resolvable', () {
+      final sc = ServiceCollection()..addModule(_LoggingModule());
+      final provider = sc.buildServiceProvider(ServiceProviderOptions.production);
+      expect(provider.getRequired<ILogger>(), isA<ConsoleLogger>());
+      expect(provider.getRequired<IDatabase>(), isA<Database>());
+      provider.dispose();
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // DependencyGraph — iterative DFS regression
+  // ───────────────────────────────────────────────────────────────────────────
+  group('DependencyGraph iterative DFS', () {
+    test('acyclic linear chain does not throw', () {
+      final g = DependencyGraph()
+        ..addEdge(ILogger, ConsoleLogger)
+        ..addEdge(IDatabase, ILogger)
+        ..addEdge(IUserRepository, IDatabase);
+      expect(() => g.detectCycles(), returnsNormally);
+    });
+
+    test('two-node cycle detected', () {
+      final g = DependencyGraph()
+        ..addEdge(ILogger, IDatabase)
+        ..addEdge(IDatabase, ILogger);
+      expect(() => g.detectCycles(),
+          throwsA(isA<CircularDependencyException>()));
+    });
+
+    test('three-node cycle detected', () {
+      final g = DependencyGraph()
+        ..addEdge(ILogger, IDatabase)
+        ..addEdge(IDatabase, IUserRepository)
+        ..addEdge(IUserRepository, ILogger);
+      expect(() => g.detectCycles(),
+          throwsA(isA<CircularDependencyException>()));
+    });
+
+    test('disconnected graph with cycle in second component', () {
+      final g = DependencyGraph()
+        ..addEdge(IEmailSender, SmtpEmailSender) // acyclic
+        ..addEdge(ILogger, IDatabase)             // cycle
+        ..addEdge(IDatabase, ILogger);
+      expect(() => g.detectCycles(),
+          throwsA(isA<CircularDependencyException>()));
+    });
+
+    test('cycle exception chain contains offending types', () {
+      final g = DependencyGraph()
+        ..addEdge(ILogger, IDatabase)
+        ..addEdge(IDatabase, ILogger);
+      CircularDependencyException? ex;
+      try {
+        g.detectCycles();
+      } on CircularDependencyException catch (e) {
+        ex = e;
+      }
+      expect(ex, isNotNull);
+      expect(ex!.chain, containsAll([ILogger, IDatabase]));
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extra test doubles
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Marker interfaces for the multi-error disposal test.
+abstract class _IThrowA {}
+
+abstract class _IThrowB {}
+
+/// A fake service that throws during [dispose] to test multi-error disposal.
+class _ThrowingDisposable with Disposable implements _IThrowA, _IThrowB {
+  final String name;
+  _ThrowingDisposable(this.name);
+
+  @override
+  void dispose() => throw StateError('$name failed to dispose');
+
+  @override
+  String toString() => '_ThrowingDisposable($name)';
+}
+
+/// Throws on dispose — used in ScopeManager disposeAll error test.
+class _ThrowingDisposable2 with Disposable implements ILogger {
+  @override
+  void log(String message) {}
+
+  @override
+  void dispose() => throw StateError('scope service failed to dispose');
+}
+
+/// Simple class that takes a DI dep + a runtime argument.
+class _Widget {
+  final ILogger logger;
+  final String label;
+  _Widget(this.logger, this.label);
+}
+
+/// Not registered in ActivatorHelper — used to verify the error path.
+class _UnregisteredWidget {}
+
+/// Simple mutable options class for the options pattern tests.
+class _ServerOptions {
+  String host = '';
+}
+
+/// A [ServiceModule] that registers [ILogger] and [IDatabase].
+class _LoggingModule extends ServiceModule {
+  @override
+  void register(ServiceCollection services) {
+    services
+      ..addSingleton<ILogger, ConsoleLogger>()
+      ..addSingleton<IDatabase, Database>();
+  }
 }

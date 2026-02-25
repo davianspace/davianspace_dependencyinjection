@@ -5,8 +5,11 @@
   "packages": [
     {
       "name": "davianspace_dependencyinjection",
-      "version": "1.0.0",
-      "dependencies": [],
+      "version": "1.0.3",
+      "dependencies": [
+        "davianspace_configuration",
+        "davianspace_options"
+      ],
       "devDependencies": [
         "lints",
         "test"
@@ -46,6 +49,16 @@
     {
       "name": "lints",
       "version": "4.0.0",
+      "dependencies": []
+    },
+    {
+      "name": "davianspace_options",
+      "version": "1.0.0",
+      "dependencies": []
+    },
+    {
+      "name": "davianspace_configuration",
+      "version": "1.0.0",
       "dependencies": []
     },
     {

@@ -39,6 +39,8 @@ final class ServiceCollection {
   final _asyncBuildHooks = <Future<void> Function(ServiceProvider provider)>[];
   // Options factories: Type → OptionsFactory<T>  (stored as Object to be
   // generic-safe; casts are done in the extension).
+  // Package-internal: accessed only by OptionsServiceCollectionExtensions.
+  // Do not access from application code.
   final optionsFactories = <Type, Object>{};
   bool _built = false;
 

@@ -27,9 +27,30 @@ final class ServiceProvider
         CallSiteLookup {
   final RootServiceProvider _root;
 
+  /// Cached executor — stateless across calls (all state is in the injected
+  /// caches/tracker/provider). Eliminates a per-resolution allocation.
+  late final CallSiteExecutor _executor = CallSiteExecutor(
+    singletonCache: _root.singletonCache,
+    scopedCache: null, // root has no scoped cache
+    disposalTracker: _root.disposalTracker,
+    diagnostics: _root.diagnostics,
+    providerRef: this,
+  );
+
   ServiceProvider(this._root) {
     _root.diagnostics.info(
         'ServiceProvider built with ${_root.callSites.length} service(s).');
+  }
+
+  // -------------------------------------------------------------------------
+  // Guard
+  // -------------------------------------------------------------------------
+
+  void _assertNotDisposed() {
+    if (_root.isDisposed) {
+      throw StateError(
+          'Cannot use a ServiceProvider that has been disposed.');
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -38,6 +59,7 @@ final class ServiceProvider
 
   @override
   T? tryGet<T extends Object>() {
+    _assertNotDisposed();
     final cs = _root.callSites[T];
     if (cs == null) return null;
     return _execute(cs) as T;
@@ -45,6 +67,7 @@ final class ServiceProvider
 
   @override
   T getRequired<T extends Object>() {
+    _assertNotDisposed();
     final cs = _root.callSites[T];
     if (cs == null) throw MissingServiceException(T);
     return _execute(cs) as T;
@@ -52,6 +75,7 @@ final class ServiceProvider
 
   @override
   List<T> getAll<T extends Object>() {
+    _assertNotDisposed();
     final all = _root.allCallSites[T];
     if (all == null || all.isEmpty) return const [];
     return [for (final cs in all) _execute(cs) as T];
@@ -59,6 +83,7 @@ final class ServiceProvider
 
   @override
   Future<T> getAsync<T extends Object>() async {
+    _assertNotDisposed();
     final cs = _root.callSites[T];
     if (cs == null) throw MissingServiceException(T);
     return await _executeAsync(cs) as T;
@@ -66,6 +91,7 @@ final class ServiceProvider
 
   @override
   Future<T?> tryGetAsync<T extends Object>() async {
+    _assertNotDisposed();
     final cs = _root.callSites[T];
     if (cs == null) return null;
     return await _executeAsync(cs) as T;
@@ -73,6 +99,7 @@ final class ServiceProvider
 
   @override
   T? tryGetKeyed<T extends Object>(Object key) {
+    _assertNotDisposed();
     final cs = _root.keyedCallSites[(T, key)];
     if (cs == null) return null;
     return _execute(cs) as T;
@@ -80,6 +107,7 @@ final class ServiceProvider
 
   @override
   T getRequiredKeyed<T extends Object>(Object key) {
+    _assertNotDisposed();
     final cs = _root.keyedCallSites[(T, key)];
     if (cs == null) throw MissingServiceException(T, key: key);
     return _execute(cs) as T;
@@ -87,6 +115,7 @@ final class ServiceProvider
 
   @override
   Future<T> getAsyncKeyed<T extends Object>(Object key) async {
+    _assertNotDisposed();
     final cs = _root.keyedCallSites[(T, key)];
     if (cs == null) throw MissingServiceException(T, key: key);
     return await _executeAsync(cs) as T;
@@ -94,6 +123,7 @@ final class ServiceProvider
 
   @override
   ServiceScopeBase createScope() {
+    _assertNotDisposed();
     _root.diagnostics.trace('Creating new scope.');
     return ServiceScope(ScopedServiceProvider(_root));
   }
@@ -121,6 +151,7 @@ final class ServiceProvider
 
   @override
   Object resolveRequired(Type type) {
+    _assertNotDisposed();
     final cs = _root.callSites[type];
     if (cs == null) throw MissingServiceException(type);
     return _execute(cs);
@@ -128,6 +159,7 @@ final class ServiceProvider
 
   /// Resolves all registrations for [type] as an untyped list.
   List<Object> resolveAll(Type type) {
+    _assertNotDisposed();
     final all = _root.allCallSites[type];
     if (all == null || all.isEmpty) return const [];
     return [for (final cs in all) _execute(cs)];
@@ -178,24 +210,10 @@ final class ServiceProvider
   // -------------------------------------------------------------------------
 
   Object _execute(CallSite cs) {
-    final executor = CallSiteExecutor(
-      singletonCache: _root.singletonCache,
-      scopedCache: null, // root has no scoped cache
-      disposalTracker: _root.disposalTracker,
-      diagnostics: _root.diagnostics,
-      providerRef: this,
-    );
-    return executor.resolve(cs, ResolutionChain());
+    return _executor.resolve(cs, ResolutionChain());
   }
 
   Future<Object> _executeAsync(CallSite cs) {
-    final executor = CallSiteExecutor(
-      singletonCache: _root.singletonCache,
-      scopedCache: null,
-      disposalTracker: _root.disposalTracker,
-      diagnostics: _root.diagnostics,
-      providerRef: this,
-    );
-    return executor.resolveAsync(cs, ResolutionChain());
+    return _executor.resolveAsync(cs, ResolutionChain());
   }
 }

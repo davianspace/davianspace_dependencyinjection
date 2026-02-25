@@ -52,10 +52,7 @@ final class DisposalTracker {
     _entries.clear();
 
     if (errors.isNotEmpty) {
-      throw DisposalException(
-        serviceType: errors.first.$1,
-        cause: errors.first.$2,
-      );
+      throw DisposalException(errors);
     }
   }
 
@@ -82,10 +79,7 @@ final class DisposalTracker {
     _entries.clear();
 
     if (errors.isNotEmpty) {
-      throw DisposalException(
-        serviceType: errors.first.$1,
-        cause: errors.first.$2,
-      );
+      throw DisposalException(errors);
     }
   }
 }

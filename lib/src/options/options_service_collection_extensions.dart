@@ -1,100 +1,226 @@
-﻿import 'package:davianspace_dependencyinjection/src/collection/service_collection.dart';
-import 'package:davianspace_dependencyinjection/src/options/i_options.dart';
-import 'package:davianspace_dependencyinjection/src/options/options_manager.dart';
+﻿import 'package:davianspace_options/davianspace_options.dart';
 
-/// Extension methods adding the Options Pattern to [ServiceCollection].
+import '../abstractions/disposable.dart';
+import '../collection/service_collection.dart';
+
+// =============================================================================
+// OptionsServiceCollectionExtensions
+// =============================================================================
+
+/// Extension methods that add the full [davianspace_options] Options Pattern
+/// to [ServiceCollection].
 ///
-/// Analogous to `Microsoft.Extensions.Options`  three tiers of options:
+/// Three lifetimes are registered per options type [T]:
 ///
-/// | Name | DI lifetime | Re-computed per scope? |
-/// |---|---|---|
-/// | `IOptions<T>` | Singleton | No (built once) |
-/// | `IOptionsSnapshot<T>` | Scoped | Yes (once per scope) |
-/// | `IOptionsMonitor<T>` | Singleton | Yes (via [OptionsMonitor.reload]) |
+/// | Interface            | Lifetime  | Notes                           |
+/// |----------------------|-----------|---------------------------------|
+/// | `Options<T>`         | Singleton | Created once, cached forever    |
+/// | `OptionsSnapshot<T>` | Scoped    | Fresh instance per scope        |
+/// | `OptionsMonitor<T>`  | Singleton | Live reload via notifier        |
 ///
-/// These types live here now but will move to `davianspace_options` when that
-/// package is published. The extension only uses the public
-/// [ServiceCollection] API so extraction will be a clean package boundary.
+/// ## Basic usage
 ///
 /// ```dart
 /// final provider = ServiceCollection()
 ///   ..configure<DatabaseOptions>(
 ///     factory: DatabaseOptions.new,
 ///     configure: (opts) {
-///       opts.host = 'localhost';
-///       opts.port = 5432;
+///       opts.host = env['DB_HOST'] ?? 'localhost';
+///       opts.port = int.parse(env['DB_PORT'] ?? '5432');
 ///     },
 ///   )
 ///   ..postConfigure<DatabaseOptions>((opts) => opts.validate())
 ///   .buildServiceProvider();
 ///
-/// // Inject: provider.getRequired<IOptions<DatabaseOptions>>().value
+/// // Singleton access:
+/// final opts = provider.getRequired<Options<DatabaseOptions>>().value;
+///
+/// // Live reload  — signal the notifier registered keyed by the options type:
+/// final notifier =
+///     provider.getRequiredKeyed<OptionsChangeNotifier>(DatabaseOptions);
+/// notifier.notifyChange(Options.defaultName);
 /// ```
 extension OptionsServiceCollectionExtensions on ServiceCollection {
-  /// Registers [T] options and adds an optional [configure] callback.
+  // -------------------------------------------------------------------------
+  // Public API
+  // -------------------------------------------------------------------------
+
+  /// Registers [T] options with an optional [configure] callback for [name].
   ///
-  /// [factory] must return a freshly constructed [T] with defaults applied.
-  /// Automatically registers `IOptions<T>`, `IOptionsSnapshot<T>`, and
-  /// `IOptionsMonitor<T>` on the first call for [T].
+  /// [factory] must return a freshly constructed, mutable [T] on every call.
+  ///
+  /// Multiple calls with the same [T] **append** configure callbacks; the
+  /// [factory] on subsequent calls is ignored (first factory wins). This
+  /// mirrors the .NET `services.Configure<T>()` behaviour.
+  ///
+  /// ```dart
+  /// services
+  ///   ..configure<AppOptions>(factory: AppOptions.new,
+  ///       configure: (o) => o.theme = 'dark')
+  ///   ..configure<AppOptions>(factory: AppOptions.new,   // factory ignored
+  ///       configure: (o) => o.logLevel = Level.warning);
+  /// ```
   ServiceCollection configure<T extends Object>({
     required T Function() factory,
     void Function(T opts)? configure,
-    String name = '',
+    String name = Options.defaultName,
   }) {
-    final optFact = _getOrCreateOptionsFactory<T>(factory);
+    final entry = _getOrCreateEntry<T>(factory);
     if (configure != null) {
-      optFact.addConfigure(configure, name);
+      if (name.isEmpty) {
+        entry.builder.configure(configure);
+      } else {
+        entry.builder.configureNamed(name, configure);
+      }
     }
-    _ensureOptionsRegistered<T>(optFact);
+    _ensureOptionsRegistered<T>(entry);
     return this;
   }
 
-  /// Adds a post-configure callback for [T] that runs after all [configure]
-  /// callbacks  suitable for validation or cross-cutting concerns.
+  /// Adds a post-configure callback for [T] that runs **after** all
+  /// [configure] callbacks — ideal for validation or cross-cutting concerns.
   ///
   /// Throws [StateError] if [configure] has not been called for [T] first.
+  ///
+  /// ```dart
+  /// services
+  ///   ..configure<AppOptions>(factory: AppOptions.new)
+  ///   ..postConfigure<AppOptions>((opts) => opts.validate());
+  /// ```
   ServiceCollection postConfigure<T extends Object>(
     void Function(T opts) postConfigureFn, {
-    String name = '',
+    String name = Options.defaultName,
   }) {
-    final existing = _optionsFactoryFor<T>();
+    final existing = _entryFor<T>();
     if (existing == null) {
       throw StateError(
         'Cannot call postConfigure<$T> before configure<$T>. '
         'Register options with configure<$T>() first.',
       );
     }
-    existing.addPostConfigure(postConfigureFn, name);
+    if (name.isEmpty) {
+      existing.builder.postConfigure(postConfigureFn);
+    } else {
+      existing.builder.postConfigureNamed(name, postConfigureFn);
+    }
     return this;
   }
 
-  // Stored on the ServiceCollection instance via optionsFactories field.
+  // -------------------------------------------------------------------------
+  // Internals
+  // -------------------------------------------------------------------------
 
-  OptionsFactory<T>? _optionsFactoryFor<T extends Object>() {
-    final f = optionsFactories[T];
-    return f == null ? null : f as OptionsFactory<T>;
+  _OptionsEntry<T>? _entryFor<T extends Object>() {
+    final e = optionsFactories[T];
+    return e == null ? null : e as _OptionsEntry<T>;
   }
 
-  OptionsFactory<T> _getOrCreateOptionsFactory<T extends Object>(
-      T Function() defaultFactory) {
+  _OptionsEntry<T> _getOrCreateEntry<T extends Object>(
+    T Function() defaultFactory,
+  ) {
     return (optionsFactories.putIfAbsent(
       T,
-      () => OptionsFactory<T>(defaultFactory),
-    ) as OptionsFactory<T>);
+      () => _OptionsEntry<T>(defaultFactory),
+    ) as _OptionsEntry<T>);
   }
 
-  void _ensureOptionsRegistered<T extends Object>(
-      OptionsFactory<T> optionsFactory) {
-    if (isRegistered<IOptions<T>>()) return;
+  void _ensureOptionsRegistered<T extends Object>(_OptionsEntry<T> entry) {
+    if (isRegistered<Options<T>>()) return;
 
-    addSingletonFactory<IOptions<T>>(
-      (_) => OptionsManager<T>(optionsFactory),
+    // Singleton: cached for the lifetime of the container.
+    addSingletonFactory<Options<T>>(
+      (_) => OptionsManager<T>(factory: _buildFactory(entry.builder)),
     );
-    addScopedFactory<IOptionsSnapshot<T>>(
-      (_) => OptionsSnapshot<T>(optionsFactory),
+
+    // Scoped: fresh OptionsManager (and therefore fresh cache) per scope.
+    addScopedFactory<OptionsSnapshot<T>>(
+      (_) => OptionsManager<T>(factory: _buildFactory(entry.builder)),
     );
-    addSingletonFactory<IOptionsMonitor<T>>(
-      (_) => OptionsMonitor<T>(optionsFactory),
+
+    // Singleton monitor: responds to OptionsChangeNotifier.notifyChange().
+    // Wrapped in _DisposableOptionsMonitor so the DI container cleans up
+    // change-token subscriptions when the root provider is disposed.
+    addSingletonFactory<OptionsMonitor<T>>(
+      (_) => _DisposableOptionsMonitor<T>(
+        OptionsMonitorImpl<T>(
+          factory: _buildFactory(entry.builder),
+          notifier: entry.notifier,
+        ),
+      ),
+    );
+
+    // Keyed notifier — trigger live reloads without a direct T reference:
+    //   provider.getRequiredKeyed<OptionsChangeNotifier>(T)
+    //           .notifyChange(Options.defaultName);
+    addKeyedSingletonFactory<OptionsChangeNotifier>(
+      T,
+      (_, __) => entry.notifier,
     );
   }
+
+  /// Builds an [OptionsFactoryImpl] from the *current* state of [builder].
+  ///
+  /// Called inside each singleton/scoped factory lambda so that configure
+  /// callbacks registered after [configure]—but before first resolution—are
+  /// still included (lazy evaluation of the action lists).
+  static OptionsFactoryImpl<T> _buildFactory<T extends Object>(
+    OptionsBuilder<T> builder,
+  ) {
+    return OptionsFactoryImpl<T>(
+      instanceFactory: builder.factory,
+      configureOptions: builder.configureActions,
+      postConfigureOptions: builder.postConfigureActions,
+      validators: builder.validators,
+    );
+  }
+}
+
+// =============================================================================
+// _OptionsEntry — private per-type registration state
+// =============================================================================
+
+/// Pairs an [OptionsBuilder] with its dedicated [OptionsChangeNotifier].
+///
+/// One instance is created per distinct options type [T] and stored in
+/// [ServiceCollection.optionsFactories] (keyed by [T]).
+final class _OptionsEntry<T extends Object> {
+  _OptionsEntry(T Function() factory)
+      : builder = OptionsBuilder<T>(factory: factory),
+        notifier = OptionsChangeNotifier();
+
+  /// Accumulates configure / post-configure / validate callbacks.
+  final OptionsBuilder<T> builder;
+
+  /// Drives live-reload notifications for this options type.
+  final OptionsChangeNotifier notifier;
+}
+
+// =============================================================================
+// _DisposableOptionsMonitor — lifecycle-aware wrapper
+// =============================================================================
+
+/// Wraps [OptionsMonitorImpl] and implements [Disposable] so the DI container
+/// automatically cancels change-token subscriptions when the root provider is
+/// disposed — preventing listener leaks in long-running applications.
+final class _DisposableOptionsMonitor<T extends Object>
+    with Disposable
+    implements OptionsMonitor<T> {
+  _DisposableOptionsMonitor(this._impl);
+
+  final OptionsMonitorImpl<T> _impl;
+
+  @override
+  T get currentValue => _impl.currentValue;
+
+  @override
+  T get(String name) => _impl.get(name);
+
+  @override
+  OptionsChangeRegistration onChange(
+    void Function(T options, String name) listener,
+  ) =>
+      _impl.onChange(listener);
+
+  @override
+  void dispose() => _impl.dispose();
 }

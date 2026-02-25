@@ -25,6 +25,17 @@ final class ScopedServiceProvider
       : _scopedCache = ScopedCache(),
         _disposalTracker = DisposalTracker();
 
+  /// Cached executor — stateless across calls; eliminates a per-resolution
+  /// allocation. Initialised lazily so it captures [_scopedCache] and
+  /// [_disposalTracker] after the constructor body runs.
+  late final CallSiteExecutor _executor = CallSiteExecutor(
+    singletonCache: _root.singletonCache,
+    scopedCache: _scopedCache,
+    disposalTracker: _disposalTracker,
+    diagnostics: _root.diagnostics,
+    providerRef: this,
+  );
+
   // -------------------------------------------------------------------------
   // Guard
   // -------------------------------------------------------------------------
@@ -172,25 +183,11 @@ final class ScopedServiceProvider
   // -------------------------------------------------------------------------
 
   Object _execute(CallSite cs) {
-    final executor = CallSiteExecutor(
-      singletonCache: _root.singletonCache,
-      scopedCache: _scopedCache,
-      disposalTracker: _disposalTracker,
-      diagnostics: _root.diagnostics,
-      providerRef: this,
-    );
-    return executor.resolve(cs, ResolutionChain());
+    return _executor.resolve(cs, ResolutionChain());
   }
 
   Future<Object> _executeAsync(CallSite cs) async {
-    final executor = CallSiteExecutor(
-      singletonCache: _root.singletonCache,
-      scopedCache: _scopedCache,
-      disposalTracker: _disposalTracker,
-      diagnostics: _root.diagnostics,
-      providerRef: this,
-    );
-    return executor.resolveAsync(cs, ResolutionChain());
+    return _executor.resolveAsync(cs, ResolutionChain());
   }
 }
 

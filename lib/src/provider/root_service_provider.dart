@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:davianspace_dependencyinjection/src/cache/singleton_cache.dart';
 import 'package:davianspace_dependencyinjection/src/callsite/call_site.dart';
 import 'package:davianspace_dependencyinjection/src/diagnostics/service_provider_diagnostics.dart';
@@ -51,7 +53,10 @@ final class RootServiceProvider {
     _disposed = true;
     diagnostics.info('Root provider disposing.');
     disposalTracker.dispose();
-    diagnostics.close();
+    // StreamController.close() returns a Future; unawaited is intentional
+    // here — the sync dispose path cannot await it.  Async callers should
+    // use disposeAsync() instead.
+    unawaited(diagnostics.close());
   }
 
   /// Async version of [dispose].

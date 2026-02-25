@@ -62,6 +62,18 @@
       "languageVersion": "3.4"
     },
     {
+      "name": "davianspace_configuration",
+      "rootUri": "file:///D:/pub-cache/hosted/pub.dev/davianspace_configuration-1.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.0"
+    },
+    {
+      "name": "davianspace_options",
+      "rootUri": "file:///D:/pub-cache/hosted/pub.dev/davianspace_options-1.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.0"
+    },
+    {
       "name": "file",
       "rootUri": "file:///D:/pub-cache/hosted/pub.dev/file-7.0.1",
       "packageUri": "lib/",
@@ -293,7 +305,7 @@
       "name": "davianspace_dependencyinjection",
       "rootUri": "../",
       "packageUri": "lib/",
-      "languageVersion": "3.3"
+      "languageVersion": "3.0"
     }
   ],
   "generator": "pub",

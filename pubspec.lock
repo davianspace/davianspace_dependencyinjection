@@ -81,6 +81,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.7"
+  davianspace_configuration:
+    dependency: "direct main"
+    description:
+      name: davianspace_configuration
+      sha256: "80ee0ddbd674918626acc70047e5cb308eed6155f766f773fe6f0d1187464d7e"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
+  davianspace_options:
+    dependency: "direct main"
+    description:
+      name: davianspace_options
+      sha256: b49dbfacd1460562ebde19ced1332c405d2cb8cb5fd5d26c452c1660de1ca81e
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   file:
     dependency: transitive
     description:

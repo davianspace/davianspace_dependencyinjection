@@ -111,19 +111,37 @@ final class ScopeManager {
   }
 
   /// Disposes all active scopes synchronously.
+  ///
+  /// All scopes are disposed even if one throws. The first error encountered
+  /// is rethrown after all scopes have been processed.
   void disposeAll() {
-    for (final s in _scopes.values) {
-      s.dispose();
+    final errors = <(String, Object)>[];
+    for (final entry in _scopes.entries) {
+      try {
+        entry.value.dispose();
+      } catch (e) {
+        errors.add((entry.key, e));
+      }
     }
     _scopes.clear();
+    if (errors.isNotEmpty) throw errors.first.$2;
   }
 
   /// Disposes all active scopes asynchronously.
+  ///
+  /// All scopes are awaited even if one throws. The first error encountered
+  /// is rethrown after all scopes have been processed.
   Future<void> disposeAllAsync() async {
-    for (final s in _scopes.values) {
-      await s.disposeAsync();
+    final errors = <(String, Object)>[];
+    for (final entry in _scopes.entries) {
+      try {
+        await entry.value.disposeAsync();
+      } catch (e) {
+        errors.add((entry.key, e));
+      }
     }
     _scopes.clear();
+    if (errors.isNotEmpty) throw errors.first.$2;
   }
 
   /// Returns the names of all currently active scopes.

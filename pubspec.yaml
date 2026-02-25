@@ -1,6 +1,6 @@
 name: davianspace_dependencyinjection
 description: Microsoft.Extensions.DependencyInjection-inspired DI container for Dart and Flutter with scopes, async resolution, keyed services, and diagnostics.
-version: 1.0.0
+version: 1.0.3
 homepage: https://github.com/davianspace/davianspace_dependencyinjection
 repository: https://github.com/davianspace/davianspace_dependencyinjection
 issue_tracker: https://github.com/davianspace/davianspace_dependencyinjection/issues
@@ -14,7 +14,11 @@ topics:
   - service-container
 
 environment:
-  sdk: ">=3.3.0 <4.0.0"
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  davianspace_configuration: ^1.0.0
+  davianspace_options: ^1.0.0
 
 dev_dependencies:
   lints: ^4.0.0

@@ -1,7 +1,7 @@
 # davianspace_dependencyinjection
 
 [![pub.dev](https://img.shields.io/pub/v/davianspace_dependencyinjection.svg)](https://pub.dev/packages/davianspace_dependencyinjection)
-[![Dart SDK](https://img.shields.io/badge/Dart-%3E%3D3.3.0-blue.svg)](https://dart.dev)
+[![Dart SDK](https://img.shields.io/badge/Dart-%3E%3D3.0.0-blue.svg)](https://dart.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A full-featured, enterprise-grade **dependency injection** (DI) container for Dart,
@@ -30,6 +30,8 @@ multi-registration; and rich diagnostics — all AOT-safe.
 | `replace<T>()` / `addRange()` | ✅ |
 | `tryAdd*` (non-overwriting registration) | ✅ |
 | `isRegistered<T>()` on built provider | ✅ |
+| **Options Pattern** (`Options<T>`, `OptionsSnapshot<T>`, `OptionsMonitor<T>`) | ✅ |
+| **Configuration** (`Configuration`, `ConfigurationRoot`, `ConfigurationBuilder`) | ✅ |
 
 ---
 
@@ -37,7 +39,7 @@ multi-registration; and rich diagnostics — all AOT-safe.
 
 ```yaml
 dependencies:
-  davianspace_dependencyinjection: ^1.0.0
+  davianspace_dependencyinjection: ^1.0.3
 ```
 
 ---
@@ -263,6 +265,100 @@ At resolution time `CallSiteExecutor` walks the `CallSite` tree, using
 
 ---
 
+## Options Pattern
+
+The Options Pattern from
+[`davianspace_options`](https://pub.dev/packages/davianspace_options) is
+natively integrated. Use `configure<T>()` and `postConfigure<T>()` on
+`ServiceCollection` — the container registers `Options<T>`,
+`OptionsSnapshot<T>`, and `OptionsMonitor<T>` at the correct lifetimes
+automatically.
+
+```dart
+import 'package:davianspace_options/davianspace_options.dart';
+import 'package:davianspace_dependencyinjection/davianspace_dependencyinjection.dart';
+
+class DatabaseOptions {
+  String host = 'localhost';
+  int    port = 5432;
+}
+
+final provider = ServiceCollection()
+  ..configure<DatabaseOptions>(
+    factory: DatabaseOptions.new,
+    configure: (opts) {
+      opts.host = 'db.prod.internal';
+      opts.port = 5432;
+    },
+  )
+  ..postConfigure<DatabaseOptions>((opts) {
+    if (opts.host.isEmpty) throw ArgumentError('host is required');
+  })
+  .buildServiceProvider();
+
+// Inject by interface.
+final opts     = provider.getRequired<Options<DatabaseOptions>>().value;
+final snapshot = provider.getRequired<OptionsSnapshot<DatabaseOptions>>().value;
+final monitor  = provider.getRequired<OptionsMonitor<DatabaseOptions>>();
+
+// Trigger a live reload.
+final notifier =
+    provider.getRequiredKeyed<OptionsChangeNotifier>(DatabaseOptions);
+notifier.notifyChange(Options.defaultName);
+```
+
+| Injectable type      | Lifetime  |
+|----------------------|-----------|
+| `Options<T>`         | Singleton |
+| `OptionsSnapshot<T>` | Scoped    |
+| `OptionsMonitor<T>`  | Singleton |
+
+---
+
+## Configuration
+
+The Configuration system from
+[`davianspace_configuration`](https://pub.dev/packages/davianspace_configuration)
+is also natively integrated. Use `addConfiguration()` or
+`addConfigurationBuilder()` to register `Configuration` as an injectable
+singleton.
+
+```dart
+import 'package:davianspace_configuration/davianspace_configuration.dart';
+import 'package:davianspace_dependencyinjection/davianspace_dependencyinjection.dart';
+
+// Option A — register a pre-built root.
+final config = ConfigurationBuilder()
+    .addJsonFile('appsettings.json')
+    .addEnvironmentVariables(prefix: 'APP_')
+    .build();
+
+final provider = ServiceCollection()
+  ..addConfiguration(config)   // registers Configuration + ConfigurationRoot
+  ..configure<DatabaseOptions>(
+    factory: DatabaseOptions.new,
+    configure: (opts) {
+      final s = config.getSection('Database');
+      opts.host = s['Host'] ?? 'localhost';
+      opts.port = int.parse(s['Port'] ?? '5432');
+    },
+  )
+  .buildServiceProvider();
+
+final cfg = provider.getRequired<Configuration>();
+
+// Option B — let the container build the configuration lazily.
+final provider2 = ServiceCollection()
+  ..addConfigurationBuilder((builder) {
+    builder
+      .addJsonFile('appsettings.json')
+      .addEnvironmentVariables(prefix: 'APP_');
+  })
+  .buildServiceProvider();
+```
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All PRs welcome.
@@ -270,3 +366,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). All PRs welcome.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+

@@ -18,6 +18,11 @@ final class CallSiteValidator {
   final Map<Type, CallSite> _callSites;
   final List<String> _errors = [];
 
+  /// When `true`, every call site is visited even after the first violation;
+  /// all messages accumulate in [_errors]. When `false`, the first violation
+  /// throws [ScopeViolationException] immediately.
+  bool _collectAll = true;
+
   CallSiteValidator(this._callSites);
 
   // -------------------------------------------------------------------------
@@ -25,7 +30,12 @@ final class CallSiteValidator {
   // -------------------------------------------------------------------------
 
   /// Validates every call site for captive-dependency (scope violation) bugs.
+  ///
+  /// When [collectAll] is `true` (default) all violations are gathered before
+  /// returning; the caller decides whether to throw. When `false`, the first
+  /// violation immediately throws [ScopeViolationException].
   List<String> validate({bool collectAll = true}) {
+    _collectAll = collectAll;
     for (final entry in _callSites.entries) {
       _validateCallSite(entry.value, null, ServiceLifetime.transient);
     }
@@ -43,7 +53,7 @@ final class CallSiteValidator {
           '"${ownerType ?? callSite.serviceType}" (singleton) '
           'depends on "${callSite.serviceType}" (scoped).';
       _errors.add(msg);
-      if (_errors.length == 1) {
+      if (!_collectAll) {
         throw ScopeViolationException(
           singletonType: ownerType ?? callSite.serviceType,
           scopedType: callSite.serviceType,
@@ -90,10 +100,12 @@ final class CallSiteValidator {
             '"${ownerType ?? implementationType}" (singleton) '
             'depends on "$dep" (scoped).';
         _errors.add(msg);
-        throw ScopeViolationException(
-          singletonType: ownerType ?? implementationType,
-          scopedType: dep,
-        );
+        if (!_collectAll) {
+          throw ScopeViolationException(
+            singletonType: ownerType ?? implementationType,
+            scopedType: dep,
+          );
+        }
       }
     }
   }
