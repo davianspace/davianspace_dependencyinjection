@@ -29,7 +29,7 @@
 /// // 4. Dispose root
 /// provider.dispose();
 /// ```
-library davianspace_dependencyinjection;
+library;
 
 // --- Abstractions ---
 export 'src/abstractions/disposable.dart';

@@ -17,9 +17,9 @@ environment:
   sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
-  davianspace_configuration: ^1.0.0
-  davianspace_options: ^1.0.0
+  davianspace_configuration: ^1.0.3
+  davianspace_options: ^1.0.3
 
 dev_dependencies:
-  lints: ^4.0.0
+  lints: ^6.0.0
   test: ^1.25.0
